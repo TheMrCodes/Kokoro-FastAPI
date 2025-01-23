@@ -70,7 +70,13 @@ conflicts = [
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cuda", extra = "gpu" },
-    { index = "pytorch-xpu", group = "gpu-intel" },
+    { index = "pytorch-xpu", extra = "gpu-intel" },
+]
+intel-extension-for-pytorch = [
+    { index = "pytorch-xpu", extra = "gpu-intel" },
+]
+oneccl-bind-pt = [
+    { index = "pytorch-xpu", extra = "gpu-intel" },
 ]
 
 [[tool.uv.index]]
@@ -84,7 +90,7 @@ url = "https://download.pytorch.org/whl/cu121"
 explicit = true
 
 [[tool.uv.index]]
-name = "torch-intel-gpu"
+name = "pytorch-xpu"
 url = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
 explicit = true
 
