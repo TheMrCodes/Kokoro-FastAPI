@@ -9,6 +9,15 @@ from loguru import logger
 
 from ..core.config import settings
 
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
+
+def is_xpu_available() -> bool:
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
 
 class TTSBaseModel(ABC):
     _instance = None
@@ -22,8 +31,8 @@ class TTSBaseModel(ABC):
         with cls._lock:
             # Set device
             cuda_available = torch.cuda.is_available()
-            logger.info(f"CUDA available: {cuda_available}")
             if cuda_available:
+                logger.info(f"CUDA available: {cuda_available}")
                 try:
                     # Test CUDA device
                     test_tensor = torch.zeros(1).cuda()
@@ -35,6 +44,18 @@ class TTSBaseModel(ABC):
                 except Exception as e:
                     logger.error(f"CUDA test failed: {e}")
                     cls._device = "cpu"
+            elif is_xpu_available():
+                logger.info("XPU available")
+                try:
+                    # Test XPU device
+                    test_tensor = torch.zeros(1).to('xpu')
+                    logger.info("XPU test successful")
+                    model_path = os.path.join(settings.model_dir, settings.pytorch_model_path)
+                    cls._device = "xpu"
+                except Exception as e:
+                    logger.error(f"XPU test failed: {e}")
+                    cls._device = "cpu"
+
             else:
                 cls._device = "cpu"
                 model_path = os.path.join(settings.model_dir, settings.onnx_model_path)

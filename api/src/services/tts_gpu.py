@@ -11,6 +11,15 @@ from .text_processing import phonemize, tokenize
 from .tts_base import TTSBaseModel
 
 
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
+
+def is_xpu_available() -> bool:
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
 # @torch.no_grad()
 # def forward(model, tokens, ref_s, speed):
 #     """Forward pass through the model"""
@@ -138,7 +147,7 @@ class TTSGPUModel(TTSBaseModel):
     @classmethod
     def initialize(cls, model_dir: str, model_path: str):
         """Initialize PyTorch model for GPU inference"""
-        if cls._instance is None and torch.cuda.is_available():
+        if cls._instance is None and (torch.cuda.is_available() or is_xpu_available()):
             try:
                 logger.info("Initializing GPU model")
                 model_path = os.path.join(model_dir, settings.pytorch_model_path)
@@ -207,21 +216,25 @@ class TTSGPUModel(TTSBaseModel):
         """
         if cls._instance is None:
             raise RuntimeError("GPU model not initialized")
+    
+        if not torch.cuda.is_available() or not is_xpu_available():
+            raise RuntimeError("GPU not available for inference")
 
+        device = cls._device
+        gpu_module = torch.cuda if torch.cuda.is_available() else torch.xpu
+
+        # Check memory pressure
         try:
-            device = cls._device
-            
-            # Check memory pressure
-            if torch.cuda.is_available():
-                memory_allocated = torch.cuda.memory_allocated(device) / 1e9  # Convert to GB
-                if memory_allocated > 2.0:  # 2GB limit
-                    logger.info(
-                        f"Memory usage above 2GB threshold:{memory_allocated:.2f}GB "
-                        f"Clearing cache"
-                    )
-                    torch.cuda.empty_cache()
-                    import gc
-                    gc.collect()
+            memory_allocated = gpu_module.memory_allocated(device) / 1e9  # Convert to GB
+            if memory_allocated > 2.0:  # 2GB limit
+                logger.info(
+                    f"Memory usage above 2GB threshold:{memory_allocated:.2f}GB "
+                    f"Clearing cache"
+                )
+                gpu_module.empty_cache()
+                import gc
+                gc.collect()
+                
             
             # Get reference style with proper device placement
             ref_s = voicepack[len(tokens)].clone().to(device)
@@ -234,29 +247,60 @@ class TTSGPUModel(TTSBaseModel):
         except RuntimeError as e:
             if "out of memory" in str(e):
                 # On OOM, do a full cleanup and retry
-                if torch.cuda.is_available():
-                    logger.warning("Out of memory detected, performing full cleanup")
-                    torch.cuda.synchronize()
-                    torch.cuda.empty_cache()
-                    import gc
-                    gc.collect()
-                    
-                    # Log memory stats after cleanup
-                    memory_allocated = torch.cuda.memory_allocated(device)
-                    memory_reserved = torch.cuda.memory_reserved(device)
-                    logger.info(
-                        f"Memory after OOM cleanup: "
-                        f"Allocated: {memory_allocated / 1e9:.2f}GB, "
-                        f"Reserved: {memory_reserved / 1e9:.2f}GB"
-                    )
-                    
-                    # Retry generation
-                    ref_s = voicepack[len(tokens)].clone().to(device)
-                    audio = forward(cls._instance, tokens, ref_s, speed)
-                    return audio
+                logger.warning("Out of memory detected, performing full cleanup")
+                gpu_module.synchronize()
+                gpu_module.empty_cache()
+                import gc
+                gc.collect()
+                
+                # Log memory stats after cleanup
+                memory_allocated = gpu_module.memory_allocated(device)
+                memory_reserved = gpu_module.memory_reserved(device)
+                logger.info(
+                    f"Memory after OOM cleanup: "
+                    f"Allocated: {memory_allocated / 1e9:.2f}GB, "
+                    f"Reserved: {memory_reserved / 1e9:.2f}GB"
+                )
+                
+                # Retry generation
+                ref_s = voicepack[len(tokens)].clone().to(device)
+                audio = forward(cls._instance, tokens, ref_s, speed)
+                return audio
             raise
             
         finally:
             # Only synchronize at the top level, no empty_cache
-            if torch.cuda.is_available():
-                torch.cuda.synchronize()
+            gpu_module.synchronize()
+
+    @classmethod
+    def get_memory_free(cls):
+        """
+        Get the memory usage of the device in GB
+        """
+        device = cls._device
+        device_type = device.type if type(device) == 'torch.device' else device
+
+        memory_allocated_in_byte = 0
+        if 'xpu' in device_type:
+            memory_allocated_in_byte = torch.xpu.memory_reserved()
+        elif 'cuda' in device_type:
+            r = torch.cuda.memory_reserved(device)
+            a = torch.cuda.memory_allocated(device)
+            memory_allocated_in_byte = r-a
+        else:
+            # CPU
+            return None
+        return round(memory_allocated_in_byte/1024**3, 3)
+    
+    @classmethod
+    def get_memory_usage(cls):
+        device = cls._device
+
+        memory_used_in_byte = 0
+        if 'xpu' in device:
+            memory_used_in_byte = torch.xpu.memory_allocated()
+        elif 'cuda' in device:
+            memory_used_in_byte = torch.cuda.memory_allocated()
+        else:
+            return None # CPU
+        return round(memory_used_in_byte/1024**3, 3)
