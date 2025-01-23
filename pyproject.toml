@@ -40,6 +40,11 @@ dependencies = [
 gpu = [
     "torch==2.5.1+cu121",
 ]
+gpu-intel = [
+    "torch==2.5.1+cxx11.abi",
+    "intel-extension-for-pytorch==2.5.10+xpu",
+    "oneccl-bind-pt==2.5.0+xpu",
+]
 cpu = [
     "torch==2.5.1",
 ]
@@ -57,6 +62,7 @@ conflicts = [
     [
         { extra = "cpu" },
         { extra = "gpu" },
+        { extra = "gpu-intel" },
     ],
 ]
 
@@ -64,6 +70,7 @@ conflicts = [
 torch = [
     { index = "pytorch-cpu", extra = "cpu" },
     { index = "pytorch-cuda", extra = "gpu" },
+    { index = "pytorch-xpu", group = "gpu-intel" },
 ]
 
 [[tool.uv.index]]
@@ -74,6 +81,11 @@ explicit = true
 [[tool.uv.index]]
 name = "pytorch-cuda"
 url = "https://download.pytorch.org/whl/cu121"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch-intel-gpu"
+url = "https://pytorch-extension.intel.com/release-whl/stable/xpu/us/"
 explicit = true
 
 [build-system]
