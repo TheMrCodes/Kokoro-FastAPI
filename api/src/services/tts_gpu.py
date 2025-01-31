@@ -217,7 +217,7 @@ class TTSGPUModel(TTSBaseModel):
         if cls._instance is None:
             raise RuntimeError("GPU model not initialized")
     
-        if not torch.cuda.is_available() or not is_xpu_available():
+        if not torch.cuda.is_available() and not is_xpu_available():
             raise RuntimeError("GPU not available for inference")
 
         device = cls._device
