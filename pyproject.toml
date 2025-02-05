@@ -44,6 +44,7 @@ gpu-intel = [
     "torch==2.5.1+cxx11.abi",
     "intel-extension-for-pytorch==2.5.10+xpu",
     "oneccl-bind-pt==2.5.0+xpu",
+    "setuptools>=75.8.0",
 ]
 cpu = [
     "torch==2.5.1",

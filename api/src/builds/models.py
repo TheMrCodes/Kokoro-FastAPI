@@ -15,6 +15,16 @@ from .istftnet import AdaIN1d, Decoder
 from .plbert import load_plbert
 
 
+try:
+    import intel_extension_for_pytorch as ipex
+except ImportError:
+    pass
+
+def is_xpu_available() -> bool:
+    return hasattr(torch, "xpu") and torch.xpu.is_available()
+
+
+
 class LinearNorm(torch.nn.Module):
     def __init__(self, in_dim, out_dim, bias=True, w_init_gain='linear'):
         super(LinearNorm, self).__init__()
@@ -336,40 +346,140 @@ def recursive_munch(d):
         return [recursive_munch(v) for v in d]
     else:
         return d
+    
+def length_to_mask(lengths):
+    """Create attention mask from lengths - possibly optimized version"""
+    max_len = lengths.max()
+    # Create mask directly on the same device as lengths
+    mask = torch.arange(max_len, device=lengths.device)[None, :].expand(
+        lengths.shape[0], -1
+    )
+    # Avoid type_as by using the correct dtype from the start
+    if lengths.dtype != mask.dtype:
+        mask = mask.to(dtype=lengths.dtype)
+    # Fuse operations  using broadcasting
+    return mask + 1 > lengths[:, None]
 
-def build_model(path, device):
-    config = Path(__file__).parent / 'config.json'
-    assert config.exists(), f'Config path incorrect: config.json not found at {config}'
-    with open(config, 'r') as r:
-        args = recursive_munch(json.load(r))
-    assert args.decoder.type == 'istftnet', f'Unknown decoder type: {args.decoder.type}'
-    decoder = Decoder(dim_in=args.hidden_dim, style_dim=args.style_dim, dim_out=args.n_mels,
+class KokoroModel(nn.Module):
+    bert: nn.Module
+    bert_encoder: nn.Module
+    predictor: nn.Module
+    decoder: nn.Module
+    text_encoder: nn.Module
+
+    @classmethod
+    def load_config(cls):
+        config = Path(__file__).parent / 'config.json'
+        assert config.exists(), f'Config path incorrect: config.json not found at {config}'
+        with open(config, 'r') as r:
+            args = recursive_munch(json.load(r))
+        assert args.decoder.type == 'istftnet', f'Unknown decoder type: {args.decoder.type}'
+        return args
+
+
+
+    def __init__(self, device, *args, **kwargs):
+        super().__init__()
+        self.device = device
+        args = self.load_config()
+        self.text_encoder = TextEncoder(channels=args.hidden_dim, kernel_size=5, depth=args.n_layer, n_symbols=args.n_token)
+        self.predictor = ProsodyPredictor(style_dim=args.style_dim, d_hid=args.hidden_dim, nlayers=args.n_layer, max_dur=args.max_dur, dropout=args.dropout)
+        self.bert = load_plbert()
+        self.decoder = Decoder(
+            dim_in=args.hidden_dim, style_dim=args.style_dim, dim_out=args.n_mels,
             resblock_kernel_sizes = args.decoder.resblock_kernel_sizes,
             upsample_rates = args.decoder.upsample_rates,
             upsample_initial_channel=args.decoder.upsample_initial_channel,
             resblock_dilation_sizes=args.decoder.resblock_dilation_sizes,
             upsample_kernel_sizes=args.decoder.upsample_kernel_sizes,
-            gen_istft_n_fft=args.decoder.gen_istft_n_fft, gen_istft_hop_size=args.decoder.gen_istft_hop_size)
-    text_encoder = TextEncoder(channels=args.hidden_dim, kernel_size=5, depth=args.n_layer, n_symbols=args.n_token)
-    predictor = ProsodyPredictor(style_dim=args.style_dim, d_hid=args.hidden_dim, nlayers=args.n_layer, max_dur=args.max_dur, dropout=args.dropout)
-    bert = load_plbert()
-    bert_encoder = nn.Linear(bert.config.hidden_size, args.hidden_dim)
-    for parent in [bert, bert_encoder, predictor, decoder, text_encoder]:
-        for child in parent.children():
-            if isinstance(child, nn.RNNBase):
-                child.flatten_parameters()
-    model = Munch(
-        bert=bert.to(device).eval(),
-        bert_encoder=bert_encoder.to(device).eval(),
-        predictor=predictor.to(device).eval(),
-        decoder=decoder.to(device).eval(),
-        text_encoder=text_encoder.to(device).eval(),
-    )
-    for key, state_dict in torch.load(path, map_location='cpu', weights_only=True)['net'].items():
-        assert key in model, key
+            gen_istft_n_fft=args.decoder.gen_istft_n_fft, gen_istft_hop_size=args.decoder.gen_istft_hop_size
+        )
+        self.bert_encoder = nn.Linear(self.bert.config.hidden_size, args.hidden_dim)
+
+        for parent in [self.bert, self.bert_encoder, self.predictor, self.decoder, self.text_encoder]:
+            for child in parent.children():
+                if isinstance(child, nn.RNNBase):
+                    child.flatten_parameters()
+
+    def load_from_file(self, path):
+        for key, state_dict in torch.load(path, map_location=self.device, weights_only=True)['net'].items():
+            assert key in ['bert', 'bert_encoder', 'predictor', 'decoder', 'text_encoder'], key
+            try:
+                getattr(self, key).load_state_dict(state_dict)
+            except:
+                state_dict = {k[7:]: v for k, v in state_dict.items()}
+                getattr(self, key).load_state_dict(state_dict, strict=False)
+
+
+    @classmethod
+    def from_pretrained(cls, path, device):
+        model = cls(device)
+        model.load_from_file(path)
+        
+        # Optimizations
+        model = model.to(device).eval()
+        if device == 'xpu':
+            model = ipex.optimize(model, conv_bn_folding=False, linear_bn_folding=False, split_master_weight_for_bf16=False)
+        return model
+
+    @torch.no_grad()
+    def forward(model, tokens, ref_s, speed):
+        """Forward pass through the model with moderate memory management"""
+        device = ref_s.device
+        
         try:
-            model[key].load_state_dict(state_dict)
-        except:
-            state_dict = {k[7:]: v for k, v in state_dict.items()}
-            model[key].load_state_dict(state_dict, strict=False)
-    return model
+            # Initial tensor setup with proper device placement
+            tokens = torch.LongTensor([[0, *tokens, 0]]).to(device)
+            input_lengths = torch.LongTensor([tokens.shape[-1]]).to(device)
+            text_mask = length_to_mask(input_lengths).to(device)
+
+            # Split and clone reference signals with explicit device placement
+            s_content = ref_s[:, 128:].clone().to(device)
+            s_ref = ref_s[:, :128].clone().to(device)
+
+            # BERT and encoder pass
+            bert_dur = model.bert(tokens, attention_mask=(~text_mask).int())
+            d_en = model.bert_encoder(bert_dur).transpose(-1, -2)
+
+            # Predictor forward pass
+            d = model.predictor.text_encoder(d_en, s_content, input_lengths, text_mask)
+            x, _ = model.predictor.lstm(d)
+
+            # Duration prediction
+            duration = model.predictor.duration_proj(x)
+            duration = torch.sigmoid(duration).sum(axis=-1) / speed
+            pred_dur = torch.round(duration).clamp(min=1).long()
+            # Only cleanup large intermediates
+            del duration, x
+
+            # Alignment matrix construction
+            pred_aln_trg = torch.zeros(input_lengths.item(), pred_dur.sum().item(), device=device)
+            c_frame = 0
+            for i in range(pred_aln_trg.size(0)):
+                pred_aln_trg[i, c_frame : c_frame + pred_dur[0, i].item()] = 1
+                c_frame += pred_dur[0, i].item()
+            pred_aln_trg = pred_aln_trg.unsqueeze(0)
+
+            # Matrix multiplications with selective cleanup
+            en = d.transpose(-1, -2) @ pred_aln_trg
+            del d  # Free large intermediate tensor
+            
+            F0_pred, N_pred = model.predictor.F0Ntrain(en, s_content)
+            del en  # Free large intermediate tensor
+
+            # Final text encoding and decoding
+            t_en = model.text_encoder(tokens, input_lengths, text_mask)
+            asr = t_en @ pred_aln_trg
+            del t_en  # Free large intermediate tensor
+
+            # Final decoding and transfer to CPU
+            output = model.decoder(asr, F0_pred, N_pred, s_ref)
+            result = output.squeeze().cpu().numpy()
+            
+            return result
+            
+        finally:
+            # Let PyTorch handle most cleanup automatically
+            # Only explicitly free the largest tensors
+            del pred_aln_trg, asr
+

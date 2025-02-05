@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 import torch
-from ..builds.models import build_model
+from ..builds.models import KokoroModel
 from loguru import logger
 
 from ..core.config import settings
@@ -151,7 +151,7 @@ class TTSGPUModel(TTSBaseModel):
             try:
                 logger.info("Initializing GPU model")
                 model_path = os.path.join(model_dir, settings.pytorch_model_path)
-                model = build_model(model_path, cls._device)
+                model = KokoroModel.from_pretrained(model_path, cls._device)
                 cls._instance = model
                 return model
             except Exception as e:
@@ -240,8 +240,7 @@ class TTSGPUModel(TTSBaseModel):
             ref_s = voicepack[len(tokens)].clone().to(device)
             
             # Generate audio
-            audio = forward(cls._instance, tokens, ref_s, speed)
-            
+            audio = cls._instance(tokens, ref_s, speed)
             return audio
             
         except RuntimeError as e:
@@ -264,7 +263,7 @@ class TTSGPUModel(TTSBaseModel):
                 
                 # Retry generation
                 ref_s = voicepack[len(tokens)].clone().to(device)
-                audio = forward(cls._instance, tokens, ref_s, speed)
+                audio = cls._instance(tokens, ref_s, speed)
                 return audio
             raise
             
