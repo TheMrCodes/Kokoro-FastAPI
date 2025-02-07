@@ -11,7 +11,6 @@ from .text_processing import phonemize, tokenize
 from .tts_base import TTSBaseModel
 
 
-
 def is_xpu_available() -> bool:
     return hasattr(torch, "xpu") and torch.xpu.is_available()
 
@@ -152,6 +151,8 @@ class TTSGPUModel(TTSBaseModel):
                 return model
             except Exception as e:
                 logger.error(f"Failed to initialize GPU model: {e}")
+                import traceback
+                traceback.print_exc()
                 return None
         return cls._instance
 
@@ -230,12 +231,9 @@ class TTSGPUModel(TTSBaseModel):
                 gpu_module.empty_cache()
                 import gc
                 gc.collect()
-                
             
             # Get reference style with proper device placement
             ref_s = voicepack[len(tokens)].clone().to(device)
-            
-            # Generate audio
             audio = cls._instance(tokens, ref_s, speed)
             return audio
             

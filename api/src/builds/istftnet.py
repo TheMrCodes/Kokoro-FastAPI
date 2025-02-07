@@ -128,7 +128,7 @@ class SineGen(torch.nn.Module):
     voiced_thoreshold: F0 threshold for U/V classification (default 0)
     flag_for_pulse: this SinGen is used inside PulseGen (default False)
     Note: when flag_for_pulse is True, the first time step of a voiced
-        segment is always sin(np.pi) or cos(0)
+        segment is always sin(torch.pi) or cos(0)
     """
 
     def __init__(self, samp_rate, upsample_scale, harmonic_num=0,
@@ -155,7 +155,7 @@ class SineGen(torch.nn.Module):
             where dim indicates fundamental tone and overtones
         """
         # convert to F0 in rad. The interger part n can be ignored
-        # because 2 * np.pi * n doesn't affect phase
+        # because 2 * torch.pi * n doesn't affect phase
         rad_values = (f0_values / self.sampling_rate) % 1
 
         # initial phase noise (no noise for fundamental component)
@@ -177,7 +177,7 @@ class SineGen(torch.nn.Module):
 #             cumsum_shift = torch.zeros_like(rad_values)
 #             cumsum_shift[:, 1:, :] = tmp_over_one_idx * -1.0
 
-#             phase = torch.cumsum(rad_values, dim=1) * 2 * np.pi
+#             phase = torch.cumsum(rad_values, dim=1) * 2 * torch.pi
             rad_values = torch.nn.functional.interpolate(rad_values.transpose(1, 2), 
                                                          scale_factor=1/self.upsample_scale, 
                                                          mode="linear").transpose(1, 2)
@@ -187,7 +187,7 @@ class SineGen(torch.nn.Module):
 #             cumsum_shift = torch.zeros_like(rad_values)
 #             cumsum_shift[:, 1:, :] = tmp_over_one_idx * -1.0
     
-            phase = torch.cumsum(rad_values, dim=1) * 2 * np.pi
+            phase = torch.cumsum(rad_values, dim=1) * 2 * torch.pi
             phase = torch.nn.functional.interpolate(phase.transpose(1, 2) * self.upsample_scale, 
                                                     scale_factor=self.upsample_scale, mode="linear").transpose(1, 2)
             sines = torch.sin(phase)
@@ -219,7 +219,7 @@ class SineGen(torch.nn.Module):
             i_phase = torch.cumsum(rad_values - tmp_cumsum, dim=1)
 
             # get the sines
-            sines = torch.cos(i_phase * 2 * np.pi)
+            sines = torch.cos(i_phase * 2 * torch.pi)
         return sines
 
     def forward(self, f0):
@@ -316,9 +316,9 @@ class Generator(torch.nn.Module):
 
         self.m_source = SourceModuleHnNSF(
                     sampling_rate=24000,
-                    upsample_scale=np.prod(upsample_rates) * gen_istft_hop_size,
+                    upsample_scale=torch.prod(torch.tensor(upsample_rates)) * gen_istft_hop_size,
                     harmonic_num=8, voiced_threshod=10)
-        self.f0_upsamp = torch.nn.Upsample(scale_factor=np.prod(upsample_rates) * gen_istft_hop_size)
+        self.f0_upsamp = torch.nn.Upsample(scale_factor=torch.prod(torch.tensor(upsample_rates)) * gen_istft_hop_size)
         self.noise_convs = nn.ModuleList()
         self.noise_res = nn.ModuleList()
         
@@ -337,7 +337,7 @@ class Generator(torch.nn.Module):
             c_cur = upsample_initial_channel // (2 ** (i + 1))
             
             if i + 1 < len(upsample_rates):  #
-                stride_f0 = np.prod(upsample_rates[i + 1:])
+                stride_f0 = int(torch.prod(torch.tensor(upsample_rates[i + 1:])))
                 self.noise_convs.append(Conv1d(
                     gen_istft_n_fft + 2, c_cur, kernel_size=stride_f0 * 2, stride=stride_f0, padding=(stride_f0+1) // 2))
                 self.noise_res.append(resblock(c_cur, 7, [1,3,5], style_dim))
@@ -457,7 +457,7 @@ class AdainResBlk1d(nn.Module):
 
     def forward(self, x, s):
         out = self._residual(x, s)
-        out = (out + self._shortcut(x)) / np.sqrt(2)
+        out = (out + self._shortcut(x)) / torch.sqrt(torch.tensor(2))
         return out
     
 class UpSample1d(nn.Module):

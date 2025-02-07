@@ -99,6 +99,8 @@ class TTSService:
                         logger.error(
                             f"Failed to generate audio for chunk: '{chunk}'. Error: {str(e)}"
                         )
+                        import traceback
+                        traceback.print_exc()
                         continue
 
                 if not audio_chunks:
@@ -197,6 +199,8 @@ class TTSService:
                     logger.error(
                         f"Failed to generate audio for chunk: '{current_chunk}'. Error: {str(e)}"
                     )
+                    import traceback
+                    traceback.print_exc()
 
                 current_chunk = next_chunk  # Move to next chunk
 

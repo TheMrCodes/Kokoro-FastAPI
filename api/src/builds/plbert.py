@@ -1,11 +1,22 @@
 # https://github.com/yl4579/StyleTTS2/blob/main/Utils/PLBERT/util.py
+from typing import Optional
+import torch
 from transformers import AlbertConfig, AlbertModel
 
 
 class CustomAlbert(AlbertModel):
-    def forward(self, *args, **kwargs):
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
+        token_type_ids: Optional[torch.Tensor] = None
+    ):
         # Call the original forward method
-        outputs = super().forward(*args, **kwargs)
+        outputs = super().forward(
+            input_ids, 
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids
+        )
         # Only return the last_hidden_state
         return outputs.last_hidden_state
 
