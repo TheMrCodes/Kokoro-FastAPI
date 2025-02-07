@@ -15,10 +15,6 @@ from .istftnet import AdaIN1d, Decoder
 from .plbert import load_plbert
 
 
-try:
-    import intel_extension_for_pytorch as ipex
-except ImportError:
-    pass
 
 def is_xpu_available() -> bool:
     return hasattr(torch, "xpu") and torch.xpu.is_available()
@@ -419,7 +415,7 @@ class KokoroModel(nn.Module):
         # Optimizations
         model = model.to(device).eval()
         if device == 'xpu':
-            model = ipex.optimize(model, conv_bn_folding=False, linear_bn_folding=False, split_master_weight_for_bf16=False)
+            model = torch.xpu.optimize(model, conv_bn_folding=False, linear_bn_folding=False, split_master_weight_for_bf16=False)
         return model
 
     @torch.no_grad()

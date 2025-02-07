@@ -9,10 +9,6 @@ from loguru import logger
 
 from ..core.config import settings
 
-try:
-    import intel_extension_for_pytorch as ipex
-except ImportError:
-    pass
 
 def is_xpu_available() -> bool:
     return hasattr(torch, "xpu") and torch.xpu.is_available()
